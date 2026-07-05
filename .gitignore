@@ -1,0 +1,7 @@
+*.ignore
+*_ignore/
+.vscode
+ScrapComputers.lua
+*EmuSC/*
+
+sc.gui.ignore

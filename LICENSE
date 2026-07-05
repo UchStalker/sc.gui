@@ -1,0 +1,71 @@
+# sc.gui Source-Available License (SGSAL) v1.0
+
+Copyright (c) 2026 The sc.gui Development Team
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of the sc.gui software and associated documentation files (the "Software"), to use, study, modify, compile, and distribute the Software, subject to the following terms and conditions:
+
+## 1. Definitions
+
+* **Software** refers to the sc.gui library, including its source code, documentation, examples, and associated materials.
+* **Derivative Work** means any modification, adaptation, extension, or other work based on the Software.
+* **Commercial Distribution** means selling, licensing, sublicensing, renting, or otherwise distributing the Software or a Derivative Work primarily for direct monetary compensation.
+
+## 2. Granted Rights
+
+You are permitted to:
+
+* Use the Software for personal, educational, research, commercial, and non-commercial purposes.
+* Study and inspect the source code.
+* Modify the Software and create Derivative Works.
+* Distribute unmodified copies of the Software.
+* Distribute applications, games, tools, and other software products that merely use or link against the Software.
+
+## 3. Restrictions
+
+You may not:
+
+### 3.1 Competing Frameworks
+
+Distribute the Software or a Derivative Work as a standalone GUI framework, GUI toolkit, UI library, or substantially similar competing development library without prior written permission from the copyright holder.
+
+### 3.2 Commercial Redistribution
+
+Sell, license, sublicense, or commercially redistribute the Software itself or any Derivative Work thereof as a standalone product without prior written permission from the copyright holder.
+
+### 3.3 Misrepresentation
+
+Remove or alter any copyright notices, license notices, or attribution statements included with the Software.
+
+You may not claim authorship of the original Software.
+
+## 4. Attribution
+
+Any public distribution of the Software or a Derivative Work must include:
+
+* This license file.
+* The original copyright notice.
+* Clear indication of any modifications made.
+
+## 5. Applications Using sc.gui
+
+Applications, games, tools, and other software created using the Software are not considered Derivative Works solely because they use, link against, or embed the Software. Such applications may be distributed under any license chosen by their author.
+
+## 6. Contributions
+
+Unless explicitly stated otherwise in writing, any contribution intentionally submitted for inclusion in the Software shall be licensed under this license.
+
+## 7. Warranty Disclaimer
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
+
+## 8. Limitation of Liability
+
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+## 9. Termination
+
+Any violation of this license immediately terminates all rights granted under this license.
+
+## 10. Governing Law
+
+This license shall be interpreted under the laws applicable in the jurisdiction of the copyright holder, unless otherwise required by local law.

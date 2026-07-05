@@ -1,0 +1,2224 @@
+-- sc.gui - a GUI Library for ScrapComputers
+--                              _ 
+--   ___  ___        __ _ _   _(_)
+--  / __|/ __|      / _` | | | | |
+--  \__ \ (__   _  | (_| | |_| | |
+--  |___/\___| (_)  \__, |\__,_|_|
+--                  |___/         
+
+-- Made by @_uchstalker_
+-- Made for ScrapComputers by The ScrapComputers Team
+
+-- lua, shut it
+---@diagnostic disable
+
+---@class GUIApplication The instance of a sc.gui GUI application.
+---@field _root GUIFrame The root frame that owns every top-level object.
+if sc == nil then
+    sc = {}
+end
+sc.gui = sc.gui or {
+    _nextId = 0,
+    _nextObjectId = 0,
+    _instances = {},
+    logger = {
+        logLevel = 0
+    },
+    dispatcher = {
+        _touchscreenHandleEvents = {}
+    }
+}
+
+sc.gui.__index = sc.gui
+
+---@generic T
+---@param fields table The fields to copy onto the new object.
+---@param meta T The metatable / class table to attach.
+---@return T object
+function sc.gui._build(fields, meta)
+    local object = setmetatable({}, meta)
+    for key, value in pairs(fields) do
+        object[key] = value
+    end
+    return object
+end
+
+function sc.gui.logger.log(level, source, msg)
+    if sc.gui.logger.logLevel == -1 then return end
+    local message = string.format("sc.gui :: [%s] %s: %s", string.upper(level), source, msg)
+    debug(message)
+    if level == "error" and sc.gui.logger.logLevel == 0 then
+        print(message)
+    end
+    if sc.gui.logger.logLevel == 1 then
+        print(message)
+    end
+end
+
+function sc.gui.logger.assert(condition, source, msg)
+    if not condition then
+        sc.gui.logger.log("error", source, msg)
+        error(msg)
+    end
+end
+
+--- Set the logging level for `sc.gui`.
+---@param level number The logging level. Can be -1, 0, or 1.
+function sc.gui.logger.setLevel(level)
+    sc.gui.logger.assert(type(level) == "number", "Log level must be a number!")
+    assert(level == -1 or level == 0 or level == 1, "Log level must be -1, 0, or 1!")
+    sc.gui.logger.logLevel = level
+end
+
+---@class RuntimeOptions
+---@field autoUpdate boolean Whether the library should automatically update on any GUI changes. NOT the same as Display.autoUpdate( bool ).
+---@field touchscreenEnabled boolean Whether the library should enable & handle touchscreen. If you do not want the library to handle touchscreen events, set the flag manually on the display.
+---@field autoClear boolean Whether the library should automatically clear the display on initialization. If you want to handle clearing manually, call the clear() method manually on the display.
+---@field touchscreenWhitelist table<string>|nil A list of game users that can interact with the touchscreen. If nil, all users can interact with the touchscreen.
+---@field backgroundColor MultiColorTypeNonNil|nil The color used to clear the display on every render. Defaults to "#000000".
+---@field scaleEnabled boolean|nil If true, the whole UI is authored at scaleSizeW x scaleSizeH and automatically scaled to the real display resolution. All coordinates, sizes, radii, line thicknesses AND text sizes are scaled; touch input is mapped back into design space. Defaults to false.
+---@field scaleSizeW number|nil The design width the layout was authored for. Required when scaleEnabled is true.
+---@field scaleSizeH number|nil The design height the layout was authored for. Required when scaleEnabled is true.
+---@field font string|nil The default text font name. For scalable ASCF text this is an ASCF font name; for regular text this may be nil to use the default built-in font.
+---@field fontSize number|nil The default text size (in design units) for scalable ASCF text. Widgets may override it per-widget. Defaults to 8.
+---@field colorToggled boolean|nil Whether scalable ASCF text may contain inline color codes by default. Defaults to false.
+---@field textMode "scalable"|"regular"|nil Which text path widgets should use by default. Defaults to "scalable".
+
+
+--- Create a new application instance.
+---@return GUIApplication app The application instance.
+function sc.gui.new()
+    local self = setmetatable({}, sc.gui)
+
+    sc.gui._nextId = sc.gui._nextId + 1
+    self.id = sc.gui._nextId
+
+    return self
+end
+
+--- Check if a display is already in use by another instance.
+---@param display Display|VirtualDisplay|any The display to look for. Can be any display-like object, even a proxy, as long as it matches ScrapComputer's display documentation.
+---@return boolean inUse Whether the display is already in use.
+---@return GUIApplication|nil instance The instance using the display, if any.
+function sc.gui.isDisplayInUse(display)
+    for _, instance in ipairs(sc.gui._instances) do
+        if instance._display == display then
+            return true, instance
+        end
+    end
+    return false
+end
+
+
+function sc.gui:_ensureInitialized()
+    if self._display == nil then
+        sc.gui.logger.log("error", "ensureInitialized", "You must call instance:init(...) before any other instance call.")
+        error("You must call instance:init(...) before any other instance call.")
+    end
+end
+
+--- Initialize the application instance on a certain display.
+---@param display Display|VirtualDisplay|any The display output. Can be any display-like object, even a proxy, as long as it matches ScrapComputer's display documentation.
+---@param opts RuntimeOptions A list of runtime options.
+function sc.gui:init(display, opts)
+    if self._display ~= nil then sc.gui.logger.log("error", "sc.gui:init", "This instance has already been initialized!"); error("This instance has already been initialized!") end
+    sc.gui.logger.assert(type(display)=="table" and display.clear ~= nil, "sc.gui:init", "Invalid Display Object!")
+    sc.gui.logger.assert(type(opts)=="table", "sc.gui:init", "Invalid Runtime Options!")
+
+    local inUse, other = sc.gui.isDisplayInUse(display)
+    if inUse and other ~= self then
+        sc.gui.logger.log("info", "sc.gui:init", string.format("Reclaiming display from previous GUI application id=%d.", other.id))
+        other:_deregister()
+    end
+
+    self._display = display
+    self._options = opts
+    self._backgroundColor = opts.backgroundColor or "#000000"
+    self._focused = nil
+    self._needsLayout = true
+    self._fullDirty = true
+    self._dirtyQueue = {}
+    self._defaultFont = opts.font
+    self._defaultFontSize = opts.fontSize or 8
+    self._defaultColorToggled = opts.colorToggled == true
+    self._defaultTextMode = opts.textMode or "scalable"
+    self:_computeScale()
+    self._renderTarget = self:_buildRenderTarget()
+    self._root = self:_createRootFrame()
+    table.insert(sc.gui._instances, self)
+
+    if sc.ascfont ~= nil and sc.ascfont.getFontNames ~= nil and self._defaultTextMode ~= "regular" then
+        local ok, names = pcall(sc.ascfont.getFontNames)
+        if ok and type(names) == "table" then
+            local found = false
+            for i = 1, #names do
+                if names[i] == self._defaultFont then found = true; break end
+            end
+            if not found then
+                if #names > 0 then
+                    sc.gui.logger.log("error", "sc.gui:init", string.format(
+                        "Specified ASCF font is not found. Utiliziung default font %s instead.", names[1]))
+                    self._defaultFont = names[1]
+                else
+                    sc.gui.logger.log("error", "sc.gui:init", "No ASCF fonts are installed; text widgets will fail to render until at least one font is available.")
+                end
+            end
+        end
+    end
+
+    if opts.autoClear == true then
+        display.clear(self._backgroundColor)
+        display.update()
+    end
+    if opts.touchscreenEnabled == true then
+        display.enableTouchScreen(true)
+        table.insert(sc.gui.dispatcher._touchscreenHandleEvents, self)
+    end
+    sc.gui.logger.log("info", "sc.gui:init", string.format("Initialized GUI application id=%d", self.id))
+end
+
+function sc.gui:_deregister()
+    self:_removeApplication()
+    local apps = sc.gui.dispatcher._touchscreenHandleEvents
+    for i = #apps, 1, -1 do
+        if apps[i] == self then
+            table.remove(apps, i)
+        end
+    end
+    self._display = nil
+end
+
+function sc.gui:_removeApplication()
+    local instances = sc.gui._instances
+
+    for i = 1, #instances do
+        if instances[i] == self then
+            instances[i] = instances[#instances]
+            instances[#instances] = nil
+            return true
+        end
+    end
+    return false
+end
+
+function sc.gui:_computeScale()
+    local deviceW, deviceH = self._display.getDimensions()
+    local opts = self._options
+    if opts.scaleEnabled == true
+        and type(opts.scaleSizeW) == "number" and opts.scaleSizeW > 0
+        and type(opts.scaleSizeH) == "number" and opts.scaleSizeH > 0 then
+        self._designW = opts.scaleSizeW
+        self._designH = opts.scaleSizeH
+        self._scaleX = deviceW / opts.scaleSizeW
+        self._scaleY = deviceH / opts.scaleSizeH
+    else
+        if opts.scaleEnabled == true then
+            sc.gui.logger.log("error", "sc.gui:init", "scaleEnabled is true but scaleSizeW/scaleSizeH are missing or invalid; scaling disabled.")
+        end
+        self._designW = deviceW
+        self._designH = deviceH
+        self._scaleX = 1
+        self._scaleY = 1
+    end
+end
+
+function sc.gui:_buildRenderTarget()
+    local display = self._display
+    local sx, sy = self._scaleX, self._scaleY
+    if sx == 1 and sy == 1 then
+        return display
+    end
+
+    local sr = (sx + sy) / 2
+    local designW, designH = self._designW, self._designH
+
+    local function sxp(v) return math.floor(v * sx + 0.5) end
+    local function syp(v) return math.floor(v * sy + 0.5) end
+
+    local function resolveFont(font)
+        if type(font) == "string" and font ~= "" then
+            return font
+        end
+        return nil
+    end
+    local function drawScalableText(x, y, text, font, color, rotation, fontSize, colorToggled)
+        display.drawASCFText(sxp(x), syp(y), text, resolveFont(font), color, rotation, math.max(1, fontSize * sr), colorToggled)
+    end
+
+    return {
+        drawFilledRect = function(x, y, w, h, color)
+            local x0, y0 = sxp(x), syp(y)
+            display.drawFilledRect(x0, y0, sxp(x + w) - x0, syp(y + h) - y0, color)
+        end,
+        drawRect = function(x, y, w, h, color)
+            local x0, y0 = sxp(x), syp(y)
+            display.drawRect(x0, y0, sxp(x + w) - x0, syp(y + h) - y0, color)
+        end,
+        drawLine = function(x, y, x1, y1, color)
+            display.drawLine(sxp(x), syp(y), sxp(x1), syp(y1), color)
+        end,
+        drawCircle = function(x, y, r, color)
+            display.drawCircle(sxp(x), syp(y), math.max(1, math.floor(r * sr + 0.5)), color)
+        end,
+        drawFilledCircle = function(x, y, r, color)
+            display.drawFilledCircle(sxp(x), syp(y), math.max(1, math.floor(r * sr + 0.5)), color)
+        end,
+        drawPixel = function(x, y, color)
+            display.drawPixel(sxp(x), syp(y), color)
+        end,
+        drawScalableText = function(x, y, text, font, color, rotation, fontSize, colorToggled)
+            drawScalableText(x, y, text, font, color, rotation, fontSize, colorToggled)
+        end,
+        drawASCFText = function(x, y, text, font, color, rotation, fontSize, colorToggled)
+            drawScalableText(x, y, text, font, color, rotation, fontSize, colorToggled)
+        end,
+        calcScalableTextSize = function(font, text, fontSize, rotation)
+            return display.calcASCFTextSize(font, text, fontSize, rotation)
+        end,
+        calcASCFTextSize = function(font, text, fontSize, rotation)
+            return display.calcASCFTextSize(font, text, fontSize, rotation)
+        end,
+        drawText = function(x, y, text, color, font, maxWidth, wordWrap)
+            display.drawText(sxp(x), syp(y), text, color, resolveFont(font), maxWidth and sxp(maxWidth) or nil, wordWrap)
+        end,
+        calcTextSize = function(text, font, maxWidth, wordWrap, dynamicHeight)
+            local w, h = display.calcTextSize(text, resolveFont(font), maxWidth, wordWrap, dynamicHeight)
+            return w / sx, h / sy
+        end,
+        getDimensions = function()
+            return designW, designH
+        end,
+    }
+end
+
+--- Get the active scale factors (real display pixels per design unit).
+--- Both are 1 when scaling is disabled.
+---@return number scaleX The horizontal scale factor.
+---@return number scaleY The vertical scale factor.
+function sc.gui:getScale()
+    self:_ensureInitialized()
+    return self._scaleX, self._scaleY
+end
+
+--- Overwrite the current touch screen state.
+---@param state boolean The new state.
+function sc.gui:setTouchScreenState(state)
+    self:_ensureInitialized()
+    sc.gui.logger.assert(type(state) == "boolean", "sc.gui:setTouchScreenState", "state must be a boolean!")
+
+    if state == true and self._options.touchscreenEnabled == false then
+        table.insert(sc.gui.dispatcher._touchscreenHandleEvents, self)
+    end
+    if state == false and self._options.touchscreenEnabled == true then
+        local apps = sc.gui.dispatcher._touchscreenHandleEvents
+
+        for i = 1, #apps do
+            if apps[i] == self then
+                apps[i] = apps[#apps]
+                apps[#apps] = nil
+            end
+        end
+    end
+
+    self._options.touchscreenEnabled = state
+    self._display.enableTouchScreen(state)
+    sc.gui.logger.log("info", "sc.gui:setTouchScreenState", string.format("The Touch Screen state for GUI Application id=%d has been overwritten to %s.", self.id, tostring(state)))
+end
+
+--- Get the current touch screen state.
+---@return boolean state The current touch screen state.
+function sc.gui:getTouchScreenState()
+    self:_ensureInitialized()
+    return self._options.touchscreenEnabled
+end
+
+--- Get the current touch screen whitelist.
+---@return table<string>|nil whitelist The current touch screen whitelist.
+function sc.gui:getTouchScreenWhitelist()
+    self:_ensureInitialized()
+    return self._options.touchscreenWhitelist
+end
+
+--- Set the current touch screen whitelist.
+---@param whitelist table<string>|nil The new touch screen whitelist.
+function sc.gui:setTouchScreenWhitelist(whitelist)
+    self:_ensureInitialized()
+    sc.gui.logger.assert(type(whitelist) == "table" or whitelist == nil, "sc.gui:setTouchScreenWhitelist", "whitelist must be a table or nil!")
+
+    self._options.touchscreenWhitelist = whitelist
+    sc.gui.logger.log("info", "sc.gui:setTouchScreenWhitelist", string.format("The Touch Screen whitelist for GUI Application id=%d has been set to %s.", self.id, tostring(whitelist)))
+end
+
+
+function sc.gui:_isUserAllowed(user)
+    local whitelist = self._options.touchscreenWhitelist
+    if whitelist == nil then return true end
+    for _, allowedUser in ipairs(whitelist) do
+        if allowedUser == user then
+            return true
+        end
+    end
+    return false
+end
+
+function sc.gui:_dispatchTouch(event)
+    self:_ensureLayout()
+    if self._scaleX ~= 1 or self._scaleY ~= 1 then
+        event = {
+            x = event.x / self._scaleX,
+            y = event.y / self._scaleY,
+            state = event.state,
+            user = event.user,
+        }
+    end
+
+    return self._root:_dispatch(event)
+end
+
+function sc.gui:_handleTouchScreenEvent(event)
+    if not self:_isUserAllowed(event.user) then return end
+    self:_dispatchTouch(event)
+end
+
+--- Poll every touchscreen-enabled application and dispatch its touch input to the
+--- widgets. Call this once per tick (e.g. from ScrapComputers' `onUpdate`) instead
+--- of reading the touch table and forwarding events yourself. Rendering is separate:
+--- rely on `autoUpdate` or call `app:render()` for animation.
+function sc.gui.onUpdate()
+    local apps = sc.gui.dispatcher._touchscreenHandleEvents
+    for i = 1, #apps do
+        local app = apps[i]
+        if app._display ~= nil then
+            for user, touch in pairs(app._display.getTouchTable()) do
+                touch.user = user
+                app:_handleTouchScreenEvent(touch)
+            end
+        end
+    end
+end
+
+
+
+function sc.gui:_rootApp()
+    local app = self
+    while app._parentApp ~= nil do
+        app = app._parentApp
+    end
+    return app
+end
+
+function sc.gui:_setFocus(widget)
+    local root = self:_rootApp()
+    if root._focused == widget then return end
+    if root._focused ~= nil and root._focused._onBlur ~= nil then
+        root._focused:_onBlur()
+    end
+    root._focused = widget
+    if widget ~= nil and widget._onFocus ~= nil then
+        widget:_onFocus()
+    end
+    root:_requestUpdate()
+end
+
+--- Get the object that currently holds keyboard focus.
+---@return GUIObject|nil focused The focused object, or nil if none is focused.
+function sc.gui:getFocused()
+    self:_ensureInitialized()
+    return self:_rootApp()._focused
+end
+
+--- Clear keyboard focus, blurring any focused object.
+function sc.gui:clearFocus()
+    self:_ensureInitialized()
+    self:_setFocus(nil)
+end
+
+--- Feed a keystroke to the currently focused object (typically an Entry).
+--- Meant to be driven from a Keyboard component, e.g. `app:feedKeystroke(keyboard.getLatestKeystroke())`.
+--- The special value "backSpace" deletes the last character; "\n" submits an Entry.
+---@param key string The keystroke to feed.
+function sc.gui:feedKeystroke(key)
+    self:_ensureInitialized()
+    if key == nil then return end
+    local widget = self:_rootApp()._focused
+    if widget ~= nil and widget._onKeystroke ~= nil then
+        widget:_onKeystroke(key)
+    end
+end
+
+
+
+--- Set the background color used to clear the display on every render.
+---@param color MultiColorTypeNonNil The new background color.
+function sc.gui:setBackgroundColor(color)
+    self:_ensureInitialized()
+    self._backgroundColor = color
+    self._fullDirty = true
+    self:_requestUpdate()
+end
+
+--- Get the application's root frame. Every object created without an explicit parent lives here.
+---@return GUIFrame root The root frame.
+function sc.gui:getRoot()
+    self:_ensureInitialized()
+    return self._root
+end
+
+--- Force a full redraw on the next render. Call this if you have manually changed
+--- something the incremental renderer cannot see, or after heavy overlapping edits.
+function sc.gui:invalidate()
+    self:_ensureInitialized()
+    self._fullDirty = true
+    self:_requestUpdate()
+end
+
+--- Render the display. The first call (and any structural change) does a full redraw;
+--- afterwards only the widgets that changed are repainted, which keeps expensive ASCF
+--- text off the per-frame hot path. Cheap to call every tick.
+function sc.gui:render()
+    self:_ensureInitialized()
+    if self:_renderContent() then
+        self._display.update()
+    end
+end
+
+function sc.gui:_renderContent()
+    local layoutWasDirty = self._needsLayout
+    self:_ensureLayout()
+    if layoutWasDirty then self._fullDirty = true end
+
+    local target = self._renderTarget
+    local drew = false
+
+    if self._fullDirty then
+        self._display.clear(self._backgroundColor)
+        self._root:_render(target)
+        self._fullDirty = false
+        for i = 1, #self._dirtyQueue do self._dirtyQueue[i]._dirtyQueued = false end
+        self._dirtyQueue = {}
+        drew = true
+    elseif #self._dirtyQueue > 0 then
+        local queue = self._dirtyQueue
+        self._dirtyQueue = {}
+        for i = 1, #queue do
+            local obj = queue[i]
+            obj._dirtyQueued = false
+            self:_redrawObject(obj, target)
+        end
+        drew = true
+    end
+
+    return drew
+end
+
+function sc.gui:_boundsOverlapSub(bounds, sub)
+    if bounds == nil then return false end
+    return bounds.x < sub._subX + sub._subWidth and bounds.x + bounds.w > sub._subX
+       and bounds.y < sub._subY + sub._subHeight and bounds.y + bounds.h > sub._subY
+end
+
+function sc.gui:_redrawObject(obj, target)
+    local stillShown = obj.visible and obj._parent ~= nil
+    if obj._lastBounds ~= nil and not (stillShown and obj._opaque) then
+        local b = obj._lastBounds
+        target.drawFilledRect(b.x, b.y, b.w, b.h, obj:_effectiveBackground())
+    end
+    if stillShown then
+        obj:_render(target)
+    end
+end
+
+function sc.gui:_requestUpdate()
+    if self._parentApp ~= nil then
+        self._parentApp:_requestUpdate()
+        return
+    end
+    if self._options ~= nil and self._options.autoUpdate == true then
+        self:render()
+    end
+end
+
+function sc.gui:_invalidateLayout()
+    self._needsLayout = true
+    self._fullDirty = true
+end
+
+function sc.gui:_ensureLayout()
+    if not self._needsLayout then return end
+    self._root.width = self._designW
+    self._root.height = self._designH
+    self._root._absX = 0
+    self._root._absY = 0
+    self._root:_layout()
+    self._needsLayout = false
+end
+
+--- Remove an object (and its children) from its parent frame.
+---@param object GUIObject The object to remove.
+---@return boolean removed Whether the object was found and removed.
+function sc.gui:removeObject(object)
+    self:_ensureInitialized()
+    return object:destroy()
+end
+
+--- Remove every object from the application's root frame.
+function sc.gui:clearObjects()
+    self:_ensureInitialized()
+    self._root:clearChildren()
+end
+
+--- Get the list of objects on the application's root frame, in draw order.
+---@return GUIObject[] objects The root frame's direct children.
+function sc.gui:getObjects()
+    self:_ensureInitialized()
+    return self._root._children
+end
+
+
+
+--- Create a nested frame on the application's root frame.
+---@param opts FrameOptions The frame options.
+---@return GUIFrame frame The created frame.
+function sc.gui:createFrame(opts)
+    self:_ensureInitialized()
+    return self._root:createFrame(opts)
+end
+
+--- Create a static text label on the application's root frame.
+---@param opts LabelOptions The label options.
+---@return GUILabel label The created label.
+function sc.gui:createLabel(opts)
+    self:_ensureInitialized()
+    return self._root:createLabel(opts)
+end
+
+--- Create a button on the application's root frame.
+---@param opts ButtonOptions The button options.
+---@return GUIButton button The created button.
+function sc.gui:createButton(opts)
+    self:_ensureInitialized()
+    return self._root:createButton(opts)
+end
+
+--- Create a checkbox on the application's root frame.
+---@param opts CheckboxOptions The checkbox options.
+---@return GUICheckbox checkbox The created checkbox.
+function sc.gui:createCheckbox(opts)
+    self:_ensureInitialized()
+    return self._root:createCheckbox(opts)
+end
+
+--- Create a radio button on the application's root frame.
+---@param opts RadioButtonOptions The radio button options.
+---@return GUIRadioButton radioButton The created radio button.
+function sc.gui:createRadioButton(opts)
+    self:_ensureInitialized()
+    return self._root:createRadioButton(opts)
+end
+
+--- Create a slider on the application's root frame.
+---@param opts SliderOptions The slider options.
+---@return GUISlider slider The created slider.
+function sc.gui:createSlider(opts)
+    self:_ensureInitialized()
+    return self._root:createSlider(opts)
+end
+
+--- Create a progress bar on the application's root frame.
+---@param opts ProgressBarOptions The progress bar options.
+---@return GUIProgressBar progressBar The created progress bar.
+function sc.gui:createProgressBar(opts)
+    self:_ensureInitialized()
+    return self._root:createProgressBar(opts)
+end
+
+--- Create a text entry on the application's root frame.
+---@param opts EntryOptions The entry options.
+---@return GUIEntry entry The created entry.
+function sc.gui:createEntry(opts)
+    self:_ensureInitialized()
+    return self._root:createEntry(opts)
+end
+
+--- Create a list box on the application's root frame.
+---@param opts ListBoxOptions The list box options.
+---@return GUIListBox listBox The created list box.
+function sc.gui:createListBox(opts)
+    self:_ensureInitialized()
+    return self._root:createListBox(opts)
+end
+
+---@class GUIVariable An observable value that widgets can bind to, similar to Tkinter's StringVar/IntVar/BooleanVar.
+sc.gui.Variable = {_nextTrace = 0}
+sc.gui.Variable.__index = sc.gui.Variable
+
+--- Create a new observable variable.
+---@param value any The initial value.
+---@return GUIVariable variable The created variable.
+function sc.gui.newVariable(value)
+    return sc.gui._build({ _value = value, _traces = {}, _nextTrace = 0 }, sc.gui.Variable)
+end
+
+--- Get the variable's current value.
+---@return any value The current value.
+function sc.gui.Variable:get()
+    return self._value
+end
+
+--- Set the variable's value. Every registered trace is notified if the value changed.
+---@param value any The new value.
+function sc.gui.Variable:set(value)
+    if self._value == value then return end
+    self._value = value
+    for _, callback in pairs(self._traces) do
+        callback(value)
+    end
+end
+
+--- Register a callback that fires whenever the value changes.
+---@param callback fun(value: any) The callback to register.
+---@return integer handle A handle that can later be passed to untrace.
+function sc.gui.Variable:trace(callback)
+    self._nextTrace = self._nextTrace + 1
+    self._traces[self._nextTrace] = callback
+    return self._nextTrace
+end
+
+--- Remove a previously registered trace callback.
+---@param handle integer The handle returned by trace.
+function sc.gui.Variable:untrace(handle)
+    self._traces[handle] = nil
+end
+
+
+---@class GUIObject The base class shared by every object created through an application.
+---@field x number The x-coordinate relative to the parent's content area (used by the place manager).
+---@field y number The y-coordinate relative to the parent's content area (used by the place manager).
+---@field width number The width of the object in pixels.
+---@field height number The height of the object in pixels.
+---@field visible boolean Whether the object is drawn during a render.
+---@field enabled boolean Whether the object responds to touch input.
+sc.gui.Object = {}
+sc.gui.Object.__index = sc.gui.Object
+
+function sc.gui._newObjectType(base)
+    local objectType = setmetatable({}, { __index = base })
+    objectType.__index = objectType
+    return objectType
+end
+
+function sc.gui._touchUser(event)
+    return event.user or "__local__"
+end
+
+sc.gui._measureCache = {}
+sc.gui._measureCacheCount = 0
+
+function sc.gui._measureScalableText(display, font, text, fontSize)
+    local fontKey = font or "__default__"
+    local byFont = sc.gui._measureCache[fontKey]
+    if byFont == nil then byFont = {}; sc.gui._measureCache[fontKey] = byFont end
+    local bySize = byFont[fontSize]
+    if bySize == nil then bySize = {}; byFont[fontSize] = bySize end
+
+    local cached = bySize[text]
+    if cached ~= nil then
+        return cached[1], cached[2]
+    end
+
+    local w, h = display.calcScalableTextSize(font, text, fontSize, 0)
+    if sc.gui._measureCacheCount >= 512 then
+        sc.gui._measureCache = {}
+        sc.gui._measureCacheCount = 0
+        byFont = {}; sc.gui._measureCache[fontKey] = byFont
+        bySize = {}; byFont[fontSize] = bySize
+    end
+    bySize[text] = { w, h }
+    sc.gui._measureCacheCount = sc.gui._measureCacheCount + 1
+    return w, h
+end
+
+function sc.gui._measureASCF(display, font, text, fontSize)
+    return sc.gui._measureScalableText(display, font, text, fontSize)
+end
+
+function sc.gui.Object:_containsPoint(px, py)
+    return px >= self._absX and px < self._absX + self.width
+       and py >= self._absY and py < self._absY + self.height
+end
+
+function sc.gui.Object:_textMode()
+    if self.textMode ~= nil then return self.textMode end
+    if self._app ~= nil and self._app._defaultTextMode ~= nil then return self._app._defaultTextMode end
+    return "scalable"
+end
+
+function sc.gui.Object:_resolveTextFont(font)
+    if type(font) == "string" and font ~= "" then
+        return font
+    end
+    if type(self.font) == "string" and self.font ~= "" then
+        return self.font
+    end
+    if self:_textMode() == "regular" then
+        return nil
+    end
+    if self._app ~= nil and type(self._app._defaultFont) == "string" and self._app._defaultFont ~= "" then
+        return self._app._defaultFont
+    end
+    return nil
+end
+function sc.gui.Object:_drawText(display, x, y, text, color, font, fontSize, colorToggled, rotation)
+    local resolvedFont = self:_resolveTextFont(font)
+    if self:_textMode() == "regular" then
+        display.drawText(x, y, text, color, resolvedFont, nil, false)
+        return
+    end
+    display.drawScalableText(x, y, text, resolvedFont, color, rotation or 0, fontSize, colorToggled)
+end
+
+function sc.gui.Object:_measureText(display, text)
+    local resolvedFont = self:_resolveTextFont(self.font)
+    if self:_textMode() == "regular" then
+        local w, h = display.calcTextSize(text, resolvedFont, nil, false, false)
+        return w or 0, h or 0
+    end
+    return sc.gui._measureASCF(display, resolvedFont, text, self.fontSize)
+end
+function sc.gui.Object:_bounds()
+    return { x = self._absX, y = self._absY, w = self.width, h = self.height }
+end
+
+function sc.gui.Object:_effectiveBackground()
+    local node = self._parent
+    while node ~= nil do
+        if node.backgroundColor ~= nil then return node.backgroundColor end
+        node = node._parent
+    end
+    return self._app._backgroundColor
+end
+
+function sc.gui.Object:_markDirty()
+    local app = self._app
+    if app == nil then return end
+    if not app._fullDirty and not self._dirtyQueued then
+        self._dirtyQueued = true
+        app._dirtyQueue[#app._dirtyQueue + 1] = self
+    end
+    app:_requestUpdate()
+end
+
+function sc.gui.Object:_draw() end
+
+function sc.gui.Object:_render(display)
+    if not self.visible then return end
+    self:_draw(display)
+    self._lastBounds = self:_bounds()
+    local children = self._children
+    if children ~= nil then
+        for i = 1, #children do
+            children[i]:_render(display)
+        end
+    end
+end
+
+function sc.gui.Object:_dispatch(event)
+    if not self.visible then return false end
+
+    local children = self._children
+    if children ~= nil then
+        for i = #children, 1, -1 do
+            if children[i]:_dispatch(event) then
+                return true
+            end
+        end
+    end
+
+    if self.enabled and self._onTouch ~= nil then
+        local inside = self:_containsPoint(event.x, event.y)
+        if self:_onTouch(event, inside) then
+            return true
+        end
+    end
+    return false
+end
+
+function sc.gui.Object:_invalidate()
+    if self._app ~= nil then
+        self._app:_invalidateLayout()
+        self._app:_requestUpdate()
+    end
+end
+
+--- Move the object (place manager). Coordinates are relative to the parent's content area.
+---@param x number The new x-coordinate.
+---@param y number The new y-coordinate.
+function sc.gui.Object:setPosition(x, y)
+    self.x = x
+    self.y = y
+    self:_invalidate()
+end
+
+--- Resize the object.
+---@param width number The new width in pixels.
+---@param height number The new height in pixels.
+function sc.gui.Object:setSize(width, height)
+    self.width = width
+    self.height = height
+    self:_invalidate()
+end
+
+--- Show or hide the object (and its children).
+---@param visible boolean Whether the object should be drawn.
+function sc.gui.Object:setVisible(visible)
+    self.visible = visible
+    self:_invalidate()
+end
+
+--- Enable or disable touch interaction for the object.
+---@param enabled boolean Whether the object should respond to touch input.
+function sc.gui.Object:setEnabled(enabled)
+    self.enabled = enabled
+    if not enabled then
+        self._pressed = {}
+        self._dragging = {}
+        self._isDown = false
+    end
+    self:_markDirty()
+end
+
+--- Get the object's absolute (screen-space) position, resolved by the layout pass.
+---@return number x The absolute x-coordinate.
+---@return number y The absolute y-coordinate.
+function sc.gui.Object:getAbsolutePosition()
+    return self._absX, self._absY
+end
+
+--- Get the parent frame of this object.
+---@return GUIFrame|nil parent The parent frame, or nil for the root frame.
+function sc.gui.Object:getParent()
+    return self._parent
+end
+
+--- Position the object with the place manager (absolute coordinates within the parent).
+---@param opts PlaceOptions The placement options.
+---@return GUIObject self The object, for chaining.
+function sc.gui.Object:place(opts)
+    opts = opts or {}
+    if opts.x ~= nil then self.x = opts.x end
+    if opts.y ~= nil then self.y = opts.y end
+    if opts.width ~= nil then self.width = opts.width end
+    if opts.height ~= nil then self.height = opts.height end
+    self._pack = nil
+    self._grid = nil
+    if self._parent ~= nil then self._parent._layoutMode = "place" end
+    self:_invalidate()
+    return self
+end
+
+--- Position the object with the pack manager (stacks siblings against a side of the parent).
+---@param opts PackOptions|nil The packing options.
+---@return GUIObject self The object, for chaining.
+function sc.gui.Object:pack(opts)
+    opts = opts or {}
+    self._pack = {
+        side = opts.side or "top",
+        padx = opts.padx or 0,
+        pady = opts.pady or 0,
+        fill = opts.fill or "none",
+        anchor = opts.anchor or "center",
+    }
+    self._grid = nil
+    if self._parent ~= nil then self._parent._layoutMode = "pack" end
+    self:_invalidate()
+    return self
+end
+
+--- Position the object with the grid manager (row/column cells within the parent).
+---@param opts GridOptions The grid options.
+---@return GUIObject self The object, for chaining.
+function sc.gui.Object:grid(opts)
+    opts = opts or {}
+    self._grid = {
+        row = opts.row or 0,
+        column = opts.column or 0,
+        rowspan = opts.rowspan or 1,
+        columnspan = opts.columnspan or 1,
+        padx = opts.padx or 0,
+        pady = opts.pady or 0,
+        sticky = opts.sticky or "",
+    }
+    self._pack = nil
+    if self._parent ~= nil then self._parent._layoutMode = "grid" end
+    self:_invalidate()
+    return self
+end
+
+--- Remove this object (and its children) from its owning frame.
+---@return boolean removed Whether the object was removed.
+function sc.gui.Object:destroy()
+    local parent = self._parent
+    if parent == nil then return false end
+    for i = 1, #parent._children do
+        if parent._children[i] == self then
+            table.remove(parent._children, i)
+            if self._app ~= nil then
+                if self._app._focused == self then self._app._focused = nil end
+                self._app:_invalidateLayout()
+                self._app:_requestUpdate()
+            end
+            return true
+        end
+    end
+    return false
+end
+
+
+---@class PlaceOptions Options for the place geometry manager.
+---@field x number|nil The x-coordinate relative to the parent's content area.
+---@field y number|nil The y-coordinate relative to the parent's content area.
+---@field width number|nil An optional new width.
+---@field height number|nil An optional new height.
+
+---@class PackOptions Options for the pack geometry manager.
+---@field side "top"|"bottom"|"left"|"right"|nil The side of the remaining space to attach to. Defaults to "top".
+---@field padx number|nil Horizontal padding around the object. Defaults to 0.
+---@field pady number|nil Vertical padding around the object. Defaults to 0.
+---@field fill "none"|"x"|"y"|"both"|nil Whether the object stretches to fill its allocated strip. Defaults to "none".
+---@field anchor string|nil Compass alignment within the strip ("n","s","e","w","ne",... or "center"). Defaults to "center".
+
+---@class GridOptions Options for the grid geometry manager.
+---@field row number|nil The zero-based row. Defaults to 0.
+---@field column number|nil The zero-based column. Defaults to 0.
+---@field rowspan number|nil How many rows the object spans. Defaults to 1.
+---@field columnspan number|nil How many columns the object spans. Defaults to 1.
+---@field padx number|nil Horizontal padding within the cell. Defaults to 0.
+---@field pady number|nil Vertical padding within the cell. Defaults to 0.
+---@field sticky string|nil Compass sides to stick to; opposite sides stretch the object (e.g. "we", "nsew"). Defaults to "".
+
+---@class FrameOptions Options for creating a frame.
+---@field x number|nil The x-coordinate relative to the parent's content area. Defaults to 0.
+---@field y number|nil The y-coordinate relative to the parent's content area. Defaults to 0.
+---@field width number|nil The width of the frame in pixels. Defaults to 0.
+---@field height number|nil The height of the frame in pixels. Defaults to 0.
+---@field padding number|nil Uniform inner padding applied to all sides. Defaults to 0.
+---@field backgroundColor MultiColorTypeNonNil|nil The fill color, or nil for a transparent frame.
+---@field borderColor MultiColorTypeNonNil|nil The border color, or nil for no border.
+---@field visible boolean|nil Whether the frame starts visible. Defaults to true.
+
+---@class GUIFrame : GUIObject A container that holds and lays out child objects.
+sc.gui.Frame = sc.gui._newObjectType(sc.gui.Object)
+
+function sc.gui:_createRootFrame()
+    local root = sc.gui._build({
+        x = 0, y = 0, width = self._designW, height = self._designH,
+        _absX = 0, _absY = 0,
+        visible = true, enabled = true,
+        _children = {},
+        _layoutMode = "place",
+        paddingLeft = 0, paddingTop = 0, paddingRight = 0, paddingBottom = 0,
+        backgroundColor = nil, borderColor = nil,
+        _pressed = {}, _dragging = {},
+        _app = self, _parent = nil,
+    }, sc.gui.Frame)
+    ---@cast root GUIFrame
+    root._id = 0
+    return root
+end
+
+function sc.gui.Frame:_add(child)
+    child._app = self._app
+    child._parent = self
+    child._pressed = child._pressed or {}
+    child._dragging = child._dragging or {}
+    sc.gui._nextObjectId = sc.gui._nextObjectId + 1
+    child._id = sc.gui._nextObjectId
+    table.insert(self._children, child)
+    self._app:_invalidateLayout()
+    self._app:_requestUpdate()
+    return child
+end
+
+function sc.gui.Frame:_draw(display)
+    if self.backgroundColor ~= nil then
+        display.drawFilledRect(self._absX, self._absY, self.width, self.height, self.backgroundColor)
+    end
+    if self.borderColor ~= nil then
+        display.drawRect(self._absX, self._absY, self.width, self.height, self.borderColor)
+    end
+end
+
+function sc.gui.Frame:_layout()
+    local contentX = self._absX + self.paddingLeft
+    local contentY = self._absY + self.paddingTop
+    local contentW = self.width - self.paddingLeft - self.paddingRight
+    local contentH = self.height - self.paddingTop - self.paddingBottom
+
+    if self._layoutMode == "pack" then
+        self:_layoutPack(contentX, contentY, contentW, contentH)
+    elseif self._layoutMode == "grid" then
+        self:_layoutGrid(contentX, contentY)
+    else
+        self:_layoutPlace(contentX, contentY)
+    end
+end
+
+function sc.gui.Frame:_layoutPlace(contentX, contentY)
+    for i = 1, #self._children do
+        local child = self._children[i]
+        child._absX = contentX + child.x
+        child._absY = contentY + child.y
+        if child._layout ~= nil then child:_layout() end
+    end
+end
+
+function sc.gui.Frame:_layoutPack(contentX, contentY, contentW, contentH)
+    local cavX, cavY, cavW, cavH = contentX, contentY, contentW, contentH
+
+    for i = 1, #self._children do
+        local child = self._children[i]
+        if child.visible then
+            local p = child._pack or { side = "top", padx = 0, pady = 0, fill = "none", anchor = "center" }
+            local reqW = child.width + p.padx * 2
+            local reqH = child.height + p.pady * 2
+
+            local parcelX, parcelY, parcelW, parcelH
+            if p.side == "top" then
+                parcelH = math.min(reqH, cavH)
+                parcelX, parcelY, parcelW = cavX, cavY, cavW
+                cavY = cavY + parcelH
+                cavH = cavH - parcelH
+            elseif p.side == "bottom" then
+                parcelH = math.min(reqH, cavH)
+                parcelX, parcelY, parcelW = cavX, cavY + cavH - parcelH, cavW
+                cavH = cavH - parcelH
+            elseif p.side == "left" then
+                parcelW = math.min(reqW, cavW)
+                parcelX, parcelY, parcelH = cavX, cavY, cavH
+                cavX = cavX + parcelW
+                cavW = cavW - parcelW
+            else
+                parcelW = math.min(reqW, cavW)
+                parcelX, parcelY, parcelH = cavX + cavW - parcelW, cavY, cavH
+                cavW = cavW - parcelW
+            end
+
+            local innerX = parcelX + p.padx
+            local innerY = parcelY + p.pady
+            local innerW = parcelW - p.padx * 2
+            local innerH = parcelH - p.pady * 2
+
+            if p.fill == "x" or p.fill == "both" then child.width = innerW end
+            if p.fill == "y" or p.fill == "both" then child.height = innerH end
+
+            child._absX = innerX + math.floor((innerW - child.width) / 2)
+            child._absY = innerY + math.floor((innerH - child.height) / 2)
+            if string.find(p.anchor, "w", 1, true) then child._absX = innerX end
+            if string.find(p.anchor, "e", 1, true) then child._absX = innerX + innerW - child.width end
+            if string.find(p.anchor, "n", 1, true) then child._absY = innerY end
+            if string.find(p.anchor, "s", 1, true) then child._absY = innerY + innerH - child.height end
+
+            if child._layout ~= nil then child:_layout() end
+        end
+    end
+end
+
+function sc.gui.Frame:_layoutGrid(contentX, contentY)
+    local colW, rowH = {}, {}
+    local maxCol, maxRow = 0, 0
+
+    for i = 1, #self._children do
+        local child = self._children[i]
+        if child.visible and child._grid ~= nil then
+            local g = child._grid
+            local lastCol = g.column + g.columnspan - 1
+            local lastRow = g.row + g.rowspan - 1
+            if lastCol > maxCol then maxCol = lastCol end
+            if lastRow > maxRow then maxRow = lastRow end
+            if g.columnspan == 1 then
+                colW[g.column] = math.max(colW[g.column] or 0, child.width + g.padx * 2)
+            end
+            if g.rowspan == 1 then
+                rowH[g.row] = math.max(rowH[g.row] or 0, child.height + g.pady * 2)
+            end
+        end
+    end
+
+    local colX, rowY = {}, {}
+    local acc = contentX
+    for c = 0, maxCol do
+        colW[c] = colW[c] or 0
+        colX[c] = acc
+        acc = acc + colW[c]
+    end
+    acc = contentY
+    for r = 0, maxRow do
+        rowH[r] = rowH[r] or 0
+        rowY[r] = acc
+        acc = acc + rowH[r]
+    end
+
+    for i = 1, #self._children do
+        local child = self._children[i]
+        if child.visible and child._grid ~= nil then
+            local g = child._grid
+            local cellW = 0
+            for c = g.column, g.column + g.columnspan - 1 do cellW = cellW + (colW[c] or 0) end
+            local cellH = 0
+            for r = g.row, g.row + g.rowspan - 1 do cellH = cellH + (rowH[r] or 0) end
+
+            local innerX = colX[g.column] + g.padx
+            local innerY = rowY[g.row] + g.pady
+            local innerW = cellW - g.padx * 2
+            local innerH = cellH - g.pady * 2
+
+            local hasW = string.find(g.sticky, "w", 1, true) ~= nil
+            local hasE = string.find(g.sticky, "e", 1, true) ~= nil
+            local hasN = string.find(g.sticky, "n", 1, true) ~= nil
+            local hasS = string.find(g.sticky, "s", 1, true) ~= nil
+
+            if hasW and hasE then child.width = innerW end
+            if hasN and hasS then child.height = innerH end
+
+            child._absX = innerX + math.floor((innerW - child.width) / 2)
+            child._absY = innerY + math.floor((innerH - child.height) / 2)
+            if hasW and not hasE then child._absX = innerX end
+            if hasE and not hasW then child._absX = innerX + innerW - child.width end
+            if hasN and not hasS then child._absY = innerY end
+            if hasS and not hasN then child._absY = innerY + innerH - child.height end
+
+            if child._layout ~= nil then child:_layout() end
+        end
+    end
+end
+
+--- Set the frame's uniform inner padding.
+---@param padding number The padding, in pixels, applied to all four sides.
+function sc.gui.Frame:setPadding(padding)
+    self.paddingLeft = padding
+    self.paddingTop = padding
+    self.paddingRight = padding
+    self.paddingBottom = padding
+    self:_invalidate()
+end
+
+--- Set the frame's background (fill) color.
+---@param color MultiColorType The new fill color, or nil for a transparent frame.
+function sc.gui.Frame:setFrameColor(color)
+    self.backgroundColor = color
+    self:_invalidate()
+end
+
+--- Remove every child from this frame.
+function sc.gui.Frame:clearChildren()
+    self._children = {}
+    self:_invalidate()
+end
+
+--- Get this frame's direct children, in draw order.
+---@return GUIObject[] children The child objects.
+function sc.gui.Frame:getChildren()
+    return self._children
+end
+
+--- Create a nested frame inside this frame.
+---@param opts FrameOptions The frame options.
+---@return GUIFrame frame The created frame.
+function sc.gui.Frame:createFrame(opts)
+    sc.gui.logger.assert(type(opts) == "table", "Frame:createFrame", "opts must be a table!")
+    local padding = opts.padding or 0
+    local frame = sc.gui._build({
+        x = opts.x or 0,
+        y = opts.y or 0,
+        width = opts.width or 0,
+        height = opts.height or 0,
+        _absX = 0, _absY = 0,
+        _children = {},
+        _layoutMode = "place",
+        paddingLeft = padding, paddingTop = padding, paddingRight = padding, paddingBottom = padding,
+        backgroundColor = opts.backgroundColor,
+        borderColor = opts.borderColor,
+        visible = opts.visible ~= false,
+        enabled = true,
+    }, sc.gui.Frame)
+    return self:_add(frame)
+end
+
+
+---@class LabelOptions Options for creating a label.
+---@field x number|nil The x-coordinate relative to the parent's content area. Defaults to 0.
+---@field y number|nil The y-coordinate relative to the parent's content area. Defaults to 0.
+---@field text string The text to display.
+---@field font string|nil The ASCF font name. Defaults to the application's default font.
+---@field fontSize number|nil The text size in design units. Defaults to the application's default font size.
+---@field textColor MultiColorTypeNonNil|nil The color of the text. Defaults to "#ffffff".
+---@field colorToggled boolean|nil Whether the text may contain inline color codes. Defaults to the application default.
+---@field visible boolean|nil Whether the label starts visible. Defaults to true.
+
+---@class GUILabel : GUIObject A static, non-interactive text label.
+---@field text string The displayed text.
+sc.gui.Label = sc.gui._newObjectType(sc.gui.Object)
+
+function sc.gui.Label:_draw(display)
+    self.width, self.height = self:_measureText(display, self.text)
+    self:_drawText(display, self._absX, self._absY, self.text, self.textColor, self.font, self.fontSize, self.colorToggled, 0)
+end
+
+function sc.gui.Label:_bounds()
+    return {
+        x = self._absX - 1,
+        y = self._absY - 1,
+        w = self.width + 3,
+        h = self.height + 3,
+    }
+end
+
+--- Set the label's text.
+--- In place mode this repaints only the label. If the label is managed by pack/grid
+--- and its size changes, call `app:invalidate()` to reflow its siblings.
+---@param text string The new text.
+function sc.gui.Label:setText(text)
+    self.text = text
+    self:_markDirty()
+end
+
+--- Create a static text label. Labels are only drawn, never interactive.
+---@param opts LabelOptions The label options.
+---@return GUILabel label The created label.
+function sc.gui.Frame:createLabel(opts)
+    sc.gui.logger.assert(type(opts) == "table", "Frame:createLabel", "opts must be a table!")
+    sc.gui.logger.assert(type(opts.text) == "string", "Frame:createLabel", "opts.text must be a string!")
+
+    local label = sc.gui._build({
+        x = opts.x or 0,
+        y = opts.y or 0,
+        width = 0,
+        height = 0,
+        _absX = 0, _absY = 0,
+        text = opts.text,
+        font = opts.font,
+        fontSize = opts.fontSize or self._app._defaultFontSize,
+        textMode = opts.textMode,
+        textColor = opts.textColor or "#ffffff",
+        colorToggled = opts.colorToggled == nil and self._app._defaultColorToggled or opts.colorToggled,
+        visible = opts.visible ~= false,
+        enabled = false,
+    }, sc.gui.Label)
+
+    return self:_add(label)
+end
+
+
+---@class ButtonOptions Options for creating a button.
+---@field x number|nil The x-coordinate relative to the parent's content area. Defaults to 0.
+---@field y number|nil The y-coordinate relative to the parent's content area. Defaults to 0.
+---@field width number|nil The width of the button in pixels. Defaults to 40.
+---@field height number|nil The height of the button in pixels. Defaults to 16.
+---@field text string|nil The label text displayed centered on the button.
+---@field font string|nil The ASCF font name. Defaults to the application's default font.
+---@field fontSize number|nil The text size in design units. Defaults to the application's default font size.
+---@field colorToggled boolean|nil Whether the label may contain inline color codes. Defaults to the application default.
+---@field textColor MultiColorTypeNonNil|nil The color of the label text. Defaults to "#ffffff".
+---@field backgroundColor MultiColorTypeNonNil|nil The background color of the button. Defaults to "#3a3a3a".
+---@field pressedColor MultiColorTypeNonNil|nil The background color while the button is held down. Defaults to "#5a5a5a".
+---@field borderColor MultiColorTypeNonNil|nil The border color, or nil for no border.
+---@field visible boolean|nil Whether the button starts visible. Defaults to true.
+---@field enabled boolean|nil Whether the button starts interactive. Defaults to true.
+---@field onClick fun(button: GUIButton, event: TouchData)|nil Called when a press is released inside the button.
+---@field onPress fun(button: GUIButton, event: TouchData)|nil Called when the button is first pressed.
+---@field onRelease fun(button: GUIButton, event: TouchData)|nil Called when a press on the button is released, inside or outside.
+
+---@class GUIButton : GUIObject A clickable button.
+---@field text string|nil The label text.
+sc.gui.Button = sc.gui._newObjectType(sc.gui.Object)
+
+function sc.gui.Button:_draw(display)
+    local background = self._isDown and self.pressedColor or self.backgroundColor
+    display.drawFilledRect(self._absX, self._absY, self.width, self.height, background)
+    if self.borderColor ~= nil then
+        display.drawRect(self._absX, self._absY, self.width, self.height, self.borderColor)
+    end
+    if self.text ~= nil and self.text ~= "" then
+        local textWidth, textHeight = self:_measureText(display, self.text)
+        local textX = self._absX + math.floor((self.width - textWidth) / 2)
+        local textY = self._absY + math.floor((self.height - textHeight) / 2)
+        self:_drawText(display, textX, textY, self.text, self.textColor, self.font, self.fontSize, self.colorToggled, 0)
+    end
+end
+
+function sc.gui.Button:_onTouch(event, inside)
+    local user = sc.gui._touchUser(event)
+    if event.state == 1 then
+        if inside then
+            self._pressed[user] = true
+            self._isDown = true
+            self:_markDirty()
+            if self.onPress then self.onPress(self, event) end
+            return true
+        end
+    elseif event.state == 3 then
+        if self._pressed[user] then
+            self._pressed[user] = nil
+            self._isDown = next(self._pressed) ~= nil
+            self:_markDirty()
+            if self.onRelease then self.onRelease(self, event) end
+            if inside and self.onClick then self.onClick(self, event) end
+            return true
+        end
+    end
+    return false
+end
+
+--- Set the button's label text.
+---@param text string The new label text.
+function sc.gui.Button:setText(text)
+    self.text = text
+    self:_markDirty()
+end
+
+--- Create a clickable button.
+---@param opts ButtonOptions The button options.
+---@return GUIButton button The created button.
+function sc.gui.Frame:createButton(opts)
+    sc.gui.logger.assert(type(opts) == "table", "Frame:createButton", "opts must be a table!")
+
+    local button = sc.gui._build({
+        x = opts.x or 0,
+        y = opts.y or 0,
+        width = opts.width or 40,
+        height = opts.height or 16,
+        _absX = 0, _absY = 0,
+        text = opts.text,
+        font = opts.font,
+        fontSize = opts.fontSize or self._app._defaultFontSize,
+        colorToggled = opts.colorToggled == nil and self._app._defaultColorToggled or opts.colorToggled,
+        textColor = opts.textColor or "#ffffff",
+        backgroundColor = opts.backgroundColor or "#3a3a3a",
+        pressedColor = opts.pressedColor or "#5a5a5a",
+        borderColor = opts.borderColor,
+        visible = opts.visible ~= false,
+        enabled = opts.enabled ~= false,
+        onClick = opts.onClick,
+        onPress = opts.onPress,
+        onRelease = opts.onRelease,
+        _isDown = false,
+        _opaque = true,
+    }, sc.gui.Button)
+
+    return self:_add(button)
+end
+
+---@class CheckboxOptions Options for creating a checkbox.
+---@field x number|nil The x-coordinate relative to the parent's content area. Defaults to 0.
+---@field y number|nil The y-coordinate relative to the parent's content area. Defaults to 0.
+---@field size number|nil The width and height of the tickable box in pixels. Defaults to 12.
+---@field width number|nil The width of the clickable area. Defaults to the box size.
+---@field text string|nil A label drawn to the right of the box.
+---@field font string|nil The ASCF font name. Defaults to the application's default font.
+---@field fontSize number|nil The label text size in design units. Defaults to the application's default font size.
+---@field colorToggled boolean|nil Whether the label may contain inline color codes. Defaults to the application default.
+---@field checked boolean|nil The initial checked state. Defaults to false.
+---@field variable GUIVariable|nil A boolean variable to bind the checked state to.
+---@field spacing number|nil The gap in pixels between the box and the label. Defaults to 4.
+---@field textColor MultiColorTypeNonNil|nil The color of the label text. Defaults to "#ffffff".
+---@field backgroundColor MultiColorTypeNonNil|nil The fill color of the box. Defaults to "#3a3a3a".
+---@field borderColor MultiColorTypeNonNil|nil The border color of the box. Defaults to "#ffffff".
+---@field checkColor MultiColorTypeNonNil|nil The color of the tick mark. Defaults to "#4caf50".
+---@field visible boolean|nil Whether the checkbox starts visible. Defaults to true.
+---@field enabled boolean|nil Whether the checkbox starts interactive. Defaults to true.
+---@field onChange fun(checkbox: GUICheckbox, checked: boolean, event: TouchData)|nil Called whenever the checked state changes.
+
+---@class GUICheckbox : GUIObject A toggleable checkbox.
+---@field checked boolean Whether the checkbox is currently ticked.
+sc.gui.Checkbox = sc.gui._newObjectType(sc.gui.Object)
+
+function sc.gui.Checkbox:_draw(display)
+    display.drawFilledRect(self._absX, self._absY, self.boxSize, self.boxSize, self.backgroundColor)
+    display.drawRect(self._absX, self._absY, self.boxSize, self.boxSize, self.borderColor)
+    if self.checked then
+        local padding = math.max(1, math.floor(self.boxSize / 4))
+        display.drawFilledRect(self._absX + padding, self._absY + padding, self.boxSize - padding * 2, self.boxSize - padding * 2, self.checkColor)
+    end
+    if self.text ~= nil and self.text ~= "" then
+        local _, textHeight = self:_measureText(display, self.text)
+        local textY = self._absY + math.floor((self.boxSize - textHeight) / 2)
+        self:_drawText(display, self._absX + self.boxSize + self.spacing, textY, self.text, self.textColor, self.font, self.fontSize, self.colorToggled, 0)
+    end
+end
+
+function sc.gui.Checkbox:_onTouch(event, inside)
+    if event.state == 1 and inside then
+        self.checked = not self.checked
+        if self.variable ~= nil then self.variable:set(self.checked) end
+        self:_markDirty()
+        if self.onChange then self.onChange(self, self.checked, event) end
+        return true
+    end
+    return false
+end
+
+--- Overwrite the checked state of the checkbox. Updates the bound variable, if any.
+---@param checked boolean The new checked state.
+function sc.gui.Checkbox:setChecked(checked)
+    self.checked = checked and true or false
+    if self.variable ~= nil then self.variable:set(self.checked) end
+    self:_markDirty()
+end
+
+--- Get the checked state of the checkbox.
+---@return boolean checked Whether the checkbox is ticked.
+function sc.gui.Checkbox:isChecked()
+    return self.checked
+end
+
+--- Create a toggleable checkbox.
+---@param opts CheckboxOptions The checkbox options.
+---@return GUICheckbox checkbox The created checkbox.
+function sc.gui.Frame:createCheckbox(opts)
+    sc.gui.logger.assert(type(opts) == "table", "Frame:createCheckbox", "opts must be a table!")
+
+    local boxSize = opts.size or 12
+    local checked = opts.checked == true
+    if opts.variable ~= nil then checked = opts.variable:get() and true or false end
+
+    local checkbox = sc.gui._build({
+        x = opts.x or 0,
+        y = opts.y or 0,
+        width = opts.width or boxSize,
+        height = boxSize,
+        _absX = 0, _absY = 0,
+        boxSize = boxSize,
+        text = opts.text,
+        font = opts.font,
+        fontSize = opts.fontSize or self._app._defaultFontSize,
+        colorToggled = opts.colorToggled == nil and self._app._defaultColorToggled or opts.colorToggled,
+        checked = checked,
+        variable = opts.variable,
+        spacing = opts.spacing or 4,
+        textColor = opts.textColor or "#ffffff",
+        backgroundColor = opts.backgroundColor or "#3a3a3a",
+        borderColor = opts.borderColor or "#ffffff",
+        checkColor = opts.checkColor or "#4caf50",
+        visible = opts.visible ~= false,
+        enabled = opts.enabled ~= false,
+        onChange = opts.onChange,
+    }, sc.gui.Checkbox)
+    ---@cast checkbox GUICheckbox
+
+    self:_add(checkbox)
+
+    if checkbox.variable ~= nil then
+        checkbox.variable:trace(function(value)
+            checkbox.checked = value and true or false
+            checkbox:_markDirty()
+        end)
+    end
+
+    return checkbox
+end
+
+---@class RadioButtonOptions Options for creating a radio button.
+---@field x number|nil The x-coordinate relative to the parent's content area. Defaults to 0.
+---@field y number|nil The y-coordinate relative to the parent's content area. Defaults to 0.
+---@field size number|nil The diameter of the radio circle in pixels. Defaults to 12.
+---@field width number|nil The width of the clickable area. Defaults to the circle size.
+---@field variable GUIVariable The shared variable identifying the selected value in the group. Required.
+---@field value any The value this radio button represents. Selected when the variable equals this value.
+---@field innerPadding number|nil The gap between the circle outline and the filled inner dot. Defaults to 3.
+---@field text string|nil A label drawn to the right of the circle.
+---@field font string|nil The ASCF font name. Defaults to the application's default font.
+---@field fontSize number|nil The label text size in design units. Defaults to the application's default font size.
+---@field colorToggled boolean|nil Whether the label may contain inline color codes. Defaults to the application default.
+---@field spacing number|nil The gap in pixels between the circle and the label. Defaults to 4.
+---@field textColor MultiColorTypeNonNil|nil The color of the label text. Defaults to "#ffffff".
+---@field borderColor MultiColorTypeNonNil|nil The color of the circle outline. Defaults to "#ffffff".
+---@field selectColor MultiColorTypeNonNil|nil The color of the filled inner dot when selected. Defaults to "#4caf50".
+---@field visible boolean|nil Whether the radio button starts visible. Defaults to true.
+---@field enabled boolean|nil Whether the radio button starts interactive. Defaults to true.
+---@field onSelect fun(radioButton: GUIRadioButton, value: any, event: TouchData)|nil Called when this radio button is selected.
+
+---@class GUIRadioButton : GUIObject A radio button belonging to a group defined by a shared variable.
+---@field value any The value this radio button represents.
+sc.gui.RadioButton = sc.gui._newObjectType(sc.gui.Object)
+
+function sc.gui.RadioButton:_draw(display)
+    local radius = math.floor(self.size / 2)
+    local cx = self._absX + radius
+    local cy = self._absY + radius
+    display.drawCircle(cx, cy, radius, self.borderColor)
+    if self.variable:get() == self.value then
+        display.drawFilledCircle(cx, cy, math.max(1, radius - self.innerPadding), self.selectColor)
+    end
+    if self.text ~= nil and self.text ~= "" then
+        local _, textHeight = self:_measureText(display, self.text)
+        local textY = self._absY + math.floor((self.size - textHeight) / 2)
+        self:_drawText(display, self._absX + self.size + self.spacing, textY, self.text, self.textColor, self.font, self.fontSize, self.colorToggled, 0)
+    end
+end
+
+function sc.gui.RadioButton:_onTouch(event, inside)
+    if event.state == 1 and inside then
+        self.variable:set(self.value)
+        if self.onSelect then self.onSelect(self, self.value, event) end
+        return true
+    end
+    return false
+end
+
+--- Select this radio button, updating the shared variable.
+function sc.gui.RadioButton:select()
+    self.variable:set(self.value)
+    self:_markDirty()
+end
+
+--- Get whether this radio button is currently selected.
+---@return boolean selected Whether this radio button's value matches the shared variable.
+function sc.gui.RadioButton:isSelected()
+    return self.variable:get() == self.value
+end
+
+--- Create a radio button. Radio buttons that share a variable form a mutually-exclusive group.
+---@param opts RadioButtonOptions The radio button options.
+---@return GUIRadioButton radioButton The created radio button.
+function sc.gui.Frame:createRadioButton(opts)
+    sc.gui.logger.assert(type(opts) == "table", "Frame:createRadioButton", "opts must be a table!")
+    sc.gui.logger.assert(getmetatable(opts.variable) == sc.gui.Variable, "Frame:createRadioButton", "opts.variable must be a Variable created with sc.gui.newVariable!")
+
+    local size = opts.size or 12
+    local radioButton = sc.gui._build({
+        x = opts.x or 0,
+        y = opts.y or 0,
+        width = opts.width or size,
+        height = size,
+        _absX = 0, _absY = 0,
+        size = size,
+        innerPadding = opts.innerPadding or 3,
+        variable = opts.variable,
+        value = opts.value,
+        text = opts.text,
+        font = opts.font,
+        fontSize = opts.fontSize or self._app._defaultFontSize,
+        colorToggled = opts.colorToggled == nil and self._app._defaultColorToggled or opts.colorToggled,
+        spacing = opts.spacing or 4,
+        textColor = opts.textColor or "#ffffff",
+        borderColor = opts.borderColor or "#ffffff",
+        selectColor = opts.selectColor or "#4caf50",
+        visible = opts.visible ~= false,
+        enabled = opts.enabled ~= false,
+        onSelect = opts.onSelect,
+    }, sc.gui.RadioButton)
+    ---@cast radioButton GUIRadioButton
+
+    self:_add(radioButton)
+
+    radioButton.variable:trace(function()
+        radioButton:_markDirty()
+    end)
+
+    return radioButton
+end
+
+
+
+---@class SliderOptions Options for creating a slider.
+---@field x number|nil The x-coordinate relative to the parent's content area. Defaults to 0.
+---@field y number|nil The y-coordinate relative to the parent's content area. Defaults to 0.
+---@field width number|nil The width of the slider track in pixels. Defaults to 60.
+---@field height number|nil The height of the interactive area in pixels. Defaults to 12.
+---@field min number|nil The minimum value. Defaults to 0.
+---@field max number|nil The maximum value. Defaults to 1.
+---@field value number|nil The initial value. Defaults to min.
+---@field step number|nil If greater than 0, the value snaps to multiples of this step. Defaults to 0 (continuous).
+---@field trackThickness number|nil The thickness of the track line in pixels. Defaults to 4.
+---@field knobRadius number|nil The radius of the draggable knob in pixels. Defaults to 5.
+---@field trackColor MultiColorTypeNonNil|nil The color of the unfilled track. Defaults to "#3a3a3a".
+---@field fillColor MultiColorTypeNonNil|nil The color of the filled portion of the track. Defaults to "#4caf50".
+---@field knobColor MultiColorTypeNonNil|nil The color of the knob. Defaults to "#ffffff".
+---@field visible boolean|nil Whether the slider starts visible. Defaults to true.
+---@field enabled boolean|nil Whether the slider starts interactive. Defaults to true.
+---@field onChange fun(slider: GUISlider, value: number, event: TouchData)|nil Called whenever the value changes.
+
+---@class GUISlider : GUIObject A draggable value slider.
+---@field value number The current value of the slider.
+---@field min number The minimum value.
+---@field max number The maximum value.
+sc.gui.Slider = sc.gui._newObjectType(sc.gui.Object)
+
+function sc.gui.Slider:_ratio()
+    if self.max == self.min then return 0 end
+    local ratio = (self.value - self.min) / (self.max - self.min)
+    return math.max(0, math.min(1, ratio))
+end
+
+function sc.gui.Slider:_draw(display)
+    local centerY = self._absY + math.floor(self.height / 2)
+    local trackY = centerY - math.floor(self.trackThickness / 2)
+    display.drawFilledRect(self._absX, trackY, self.width, self.trackThickness, self.trackColor)
+
+    local ratio = self:_ratio()
+    display.drawFilledRect(self._absX, trackY, math.floor(self.width * ratio), self.trackThickness, self.fillColor)
+
+    local knobX = self._absX + math.floor(self.width * ratio)
+    display.drawFilledCircle(knobX, centerY, self.knobRadius, self.knobColor)
+end
+
+function sc.gui.Slider:_setValueFromX(px, event)
+    local ratio = 0
+    if self.width > 0 then
+        ratio = (px - self._absX) / self.width
+    end
+    ratio = math.max(0, math.min(1, ratio))
+    local value = self.min + (self.max - self.min) * ratio
+    if self.step and self.step > 0 then
+        value = self.min + math.floor((value - self.min) / self.step + 0.5) * self.step
+        value = math.max(self.min, math.min(self.max, value))
+    end
+    if value ~= self.value then
+        self.value = value
+        self:_markDirty()
+        if self.onChange then self.onChange(self, value, event) end
+    end
+end
+
+function sc.gui.Slider:_onTouch(event, inside)
+    local user = sc.gui._touchUser(event)
+    if event.state == 1 then
+        if inside then
+            self._dragging[user] = true
+            self:_setValueFromX(event.x, event)
+            return true
+        end
+    elseif event.state == 2 then
+        if self._dragging[user] then
+            self:_setValueFromX(event.x, event)
+            return true
+        end
+    elseif event.state == 3 then
+        if self._dragging[user] then
+            self._dragging[user] = nil
+            self:_setValueFromX(event.x, event)
+            return true
+        end
+    end
+    return false
+end
+
+--- Overwrite the slider's value. The value is clamped to the slider's range.
+---@param value number The new value.
+function sc.gui.Slider:setValue(value)
+    self.value = math.max(self.min, math.min(self.max, value))
+    self:_markDirty()
+end
+
+--- Get the slider's current value.
+---@return number value The current value.
+function sc.gui.Slider:getValue()
+    return self.value
+end
+
+function sc.gui.Slider:_bounds()
+    local r = self.knobRadius + 1
+    local centerY = self._absY + math.floor(self.height / 2)
+    local top = math.min(self._absY, centerY - r)
+    local bottom = math.max(self._absY + self.height - 1, centerY + r)
+    return {
+        x = self._absX - r,
+        y = top,
+        w = self.width + r * 2 + 1,
+        h = bottom - top + 1,
+    }
+end
+
+--- Create a draggable value slider.
+---@param opts SliderOptions The slider options.
+---@return GUISlider slider The created slider.
+function sc.gui.Frame:createSlider(opts)
+    sc.gui.logger.assert(type(opts) == "table", "Frame:createSlider", "opts must be a table!")
+
+    local minValue = opts.min or 0
+    local maxValue = opts.max or 1
+    local startValue = opts.value or minValue
+    local slider = sc.gui._build({
+        x = opts.x or 0,
+        y = opts.y or 0,
+        width = opts.width or 60,
+        height = opts.height or 12,
+        _absX = 0, _absY = 0,
+        min = minValue,
+        max = maxValue,
+        value = math.max(minValue, math.min(maxValue, startValue)),
+        step = opts.step or 0,
+        trackThickness = opts.trackThickness or 4,
+        knobRadius = opts.knobRadius or 5,
+        trackColor = opts.trackColor or "#3a3a3a",
+        fillColor = opts.fillColor or "#4caf50",
+        knobColor = opts.knobColor or "#ffffff",
+        visible = opts.visible ~= false,
+        enabled = opts.enabled ~= false,
+        onChange = opts.onChange,
+    }, sc.gui.Slider)
+
+    return self:_add(slider)
+end
+
+
+
+---@class ProgressBarOptions Options for creating a progress bar.
+---@field x number|nil The x-coordinate relative to the parent's content area. Defaults to 0.
+---@field y number|nil The y-coordinate relative to the parent's content area. Defaults to 0.
+---@field width number|nil The width of the bar in pixels. Defaults to 60.
+---@field height number|nil The height of the bar in pixels. Defaults to 10.
+---@field min number|nil The minimum value. Defaults to 0.
+---@field max number|nil The maximum value. Defaults to 1.
+---@field value number|nil The initial value. Defaults to min.
+---@field orientation "horizontal"|"vertical"|nil The fill direction. Defaults to "horizontal".
+---@field backgroundColor MultiColorTypeNonNil|nil The color of the empty portion. Defaults to "#3a3a3a".
+---@field fillColor MultiColorTypeNonNil|nil The color of the filled portion. Defaults to "#4caf50".
+---@field borderColor MultiColorTypeNonNil|nil The border color, or nil for no border.
+---@field pixelStep number|nil The fill snaps to multiples of this many pixels, so rapid sub-step changes skip redrawing and the fill jumps by the step. Set to 1 for smooth per-pixel updates. Defaults to 4.
+---@field visible boolean|nil Whether the progress bar starts visible. Defaults to true.
+
+---@class GUIProgressBar : GUIObject A non-interactive progress/value bar.
+---@field value number The current value of the bar.
+---@field min number The minimum value.
+---@field max number The maximum value.
+sc.gui.ProgressBar = sc.gui._newObjectType(sc.gui.Object)
+
+function sc.gui.ProgressBar:_fillPixels()
+    local ratio = 0
+    if self.max ~= self.min then
+        ratio = (self.value - self.min) / (self.max - self.min)
+    end
+    ratio = math.max(0, math.min(1, ratio))
+
+    local extent = self.orientation == "vertical" and self.height or self.width
+    local exact = extent * ratio
+    if exact <= 0 then return 0 end
+    if exact >= extent then return extent end
+
+    local step = self.pixelStep
+    if step and step > 1 then
+        return math.min(extent, math.floor(exact / step + 0.5) * step)
+    end
+    return math.floor(exact)
+end
+
+function sc.gui.ProgressBar:_draw(display)
+    display.drawFilledRect(self._absX, self._absY, self.width, self.height, self.backgroundColor)
+
+    local fill = self:_fillPixels()
+    self._drawnFill = fill
+
+    if self.orientation == "vertical" then
+        display.drawFilledRect(self._absX, self._absY + self.height - fill, self.width, fill, self.fillColor)
+    else
+        display.drawFilledRect(self._absX, self._absY, fill, self.height, self.fillColor)
+    end
+
+    if self.borderColor ~= nil then
+        display.drawRect(self._absX, self._absY, self.width, self.height, self.borderColor)
+    end
+end
+
+--- Overwrite the progress bar's value. The value is clamped to the bar's range.
+--- The bar only repaints when the (pixel-step-snapped) fill actually changes.
+---@param value number The new value.
+function sc.gui.ProgressBar:setValue(value)
+    self.value = math.max(self.min, math.min(self.max, value))
+    if self:_fillPixels() ~= self._drawnFill then
+        self:_markDirty()
+    end
+end
+
+--- Get the progress bar's current value.
+---@return number value The current value.
+function sc.gui.ProgressBar:getValue()
+    return self.value
+end
+
+--- Set the progress bar's value range.
+---@param min number The new minimum value.
+---@param max number The new maximum value.
+function sc.gui.ProgressBar:setRange(min, max)
+    self.min = min
+    self.max = max
+    self.value = math.max(min, math.min(max, self.value))
+    if self:_fillPixels() ~= self._drawnFill then
+        self:_markDirty()
+    end
+end
+
+--- Set the pixel step the fill snaps to. Larger values skip more redraws when the
+--- value changes rapidly; 1 disables snapping (smooth per-pixel updates).
+---@param step number The pixel step (>= 1).
+function sc.gui.ProgressBar:setPixelStep(step)
+    self.pixelStep = step
+    if self:_fillPixels() ~= self._drawnFill then
+        self:_markDirty()
+    end
+end
+
+--- Create a non-interactive progress bar.
+---@param opts ProgressBarOptions The progress bar options.
+---@return GUIProgressBar progressBar The created progress bar.
+function sc.gui.Frame:createProgressBar(opts)
+    sc.gui.logger.assert(type(opts) == "table", "Frame:createProgressBar", "opts must be a table!")
+
+    local minValue = opts.min or 0
+    local maxValue = opts.max or 1
+    local startValue = opts.value or minValue
+    local progressBar = sc.gui._build({
+        x = opts.x or 0,
+        y = opts.y or 0,
+        width = opts.width or 60,
+        height = opts.height or 10,
+        _absX = 0, _absY = 0,
+        min = minValue,
+        max = maxValue,
+        value = math.max(minValue, math.min(maxValue, startValue)),
+        orientation = opts.orientation or "horizontal",
+        backgroundColor = opts.backgroundColor or "#3a3a3a",
+        fillColor = opts.fillColor or "#4caf50",
+        borderColor = opts.borderColor,
+        pixelStep = opts.pixelStep or 4,
+        _drawnFill = -1,
+        _opaque = true,
+        visible = opts.visible ~= false,
+        enabled = false,
+    }, sc.gui.ProgressBar)
+
+    return self:_add(progressBar)
+end
+
+
+
+---@class EntryOptions Options for creating a text entry.
+---@field x number|nil The x-coordinate relative to the parent's content area. Defaults to 0.
+---@field y number|nil The y-coordinate relative to the parent's content area. Defaults to 0.
+---@field width number|nil The width of the entry in pixels. Defaults to 80.
+---@field height number|nil The height of the entry in pixels. Defaults to 16.
+---@field text string|nil The initial text. Defaults to "".
+---@field placeholder string|nil Text shown when the entry is empty and unfocused.
+---@field variable GUIVariable|nil A variable to bind the entry's text to.
+---@field maxLength number|nil The maximum number of characters allowed.
+---@field padding number|nil Inner horizontal padding in pixels. Defaults to 3.
+---@field font string|nil The ASCF font name. Defaults to the application's default font.
+---@field fontSize number|nil The text size in design units. Defaults to the application's default font size.
+---@field colorToggled boolean|nil Whether the text may contain inline color codes. Defaults to the application default.
+---@field textColor MultiColorTypeNonNil|nil The color of the text. Defaults to "#ffffff".
+---@field placeholderColor MultiColorTypeNonNil|nil The color of the placeholder text. Defaults to "#888888".
+---@field backgroundColor MultiColorTypeNonNil|nil The fill color. Defaults to "#1e1e1e".
+---@field borderColor MultiColorTypeNonNil|nil The border color when unfocused. Defaults to "#666666".
+---@field focusBorderColor MultiColorTypeNonNil|nil The border color when focused. Defaults to "#4caf50".
+---@field cursorColor MultiColorTypeNonNil|nil The color of the text cursor. Defaults to "#ffffff".
+---@field visible boolean|nil Whether the entry starts visible. Defaults to true.
+---@field enabled boolean|nil Whether the entry starts interactive. Defaults to true.
+---@field onChange fun(entry: GUIEntry, text: string)|nil Called whenever the text changes.
+---@field onSubmit fun(entry: GUIEntry, text: string)|nil Called when a newline keystroke is fed while focused.
+
+---@class GUIEntry : GUIObject A single-line, focusable text field. Fed keystrokes via `app:feedKeystroke`.
+---@field text string The current text content.
+---@field focused boolean Whether the entry currently holds focus.
+sc.gui.Entry = sc.gui._newObjectType(sc.gui.Object)
+
+function sc.gui.Entry:_visibleText(display, innerWidth)
+    local text = self.text or ""
+    if text == "" then return "" end
+    if self:_measureText(display, text) <= innerWidth then return text end
+    for i = 2, #text do
+        local candidate = string.sub(text, i)
+        if self:_measureText(display, candidate) <= innerWidth then
+            return candidate
+        end
+    end
+    return ""
+end
+
+function sc.gui.Entry:_draw(display)
+    display.drawFilledRect(self._absX, self._absY, self.width, self.height, self.backgroundColor)
+    local border = self.focused and self.focusBorderColor or self.borderColor
+    if border ~= nil then
+        display.drawRect(self._absX, self._absY, self.width, self.height, border)
+    end
+
+    local innerX = self._absX + self.padding
+    local innerWidth = self.width - self.padding * 2
+
+    local isPlaceholder = (self.text == nil or self.text == "") and not self.focused and self.placeholder ~= nil
+    local shown, color
+    if isPlaceholder then
+        shown = self.placeholder
+        color = self.placeholderColor
+    else
+        shown = self:_visibleText(display, innerWidth)
+        color = self.textColor
+    end
+
+    local _, lineHeight = self:_measureText(display, "Ag")
+    local textY = self._absY + math.floor((self.height - lineHeight) / 2)
+    if shown ~= "" then
+        self:_drawText(display, innerX, textY, shown, color, self.font, self.fontSize, self.colorToggled, 0)
+    end
+
+    if self.focused then
+        local cursorX = innerX
+        if shown ~= "" and not isPlaceholder then
+            cursorX = innerX + self:_measureText(display, shown)
+        end
+        display.drawLine(cursorX, textY, cursorX, textY + lineHeight, self.cursorColor)
+    end
+end
+
+function sc.gui.Entry:_onTouch(event, inside)
+    if event.state == 1 and inside then
+        self._app:_setFocus(self)
+        return true
+    end
+    return false
+end
+
+function sc.gui.Entry:_onFocus()
+    self.focused = true
+    self:_markDirty()
+end
+
+function sc.gui.Entry:_onBlur()
+    self.focused = false
+    self:_markDirty()
+end
+
+function sc.gui.Entry:_afterEdit()
+    if self.variable ~= nil then self.variable:set(self.text) end
+    if self.onChange then self.onChange(self, self.text) end
+    self:_markDirty()
+end
+
+function sc.gui.Entry:_onKeystroke(key)
+    if type(key) ~= "string" then return end
+    if key == "backSpace" then
+        if #self.text > 0 then
+            self.text = string.sub(self.text, 1, #self.text - 1)
+            self:_afterEdit()
+        end
+        return
+    end
+    if key == "\n" or key == "\r" or key == "enter" then
+        if self.onSubmit then self.onSubmit(self, self.text) end
+        return
+    end
+    if self.maxLength ~= nil and #self.text >= self.maxLength then return end
+    self.text = self.text .. key
+    self:_afterEdit()
+end
+
+--- Give this entry keyboard focus.
+function sc.gui.Entry:focus()
+    self._app:_setFocus(self)
+end
+
+--- Get the entry's current text.
+---@return string text The current text.
+function sc.gui.Entry:getText()
+    return self.text
+end
+
+--- Overwrite the entry's text. Updates the bound variable, if any.
+---@param text string The new text.
+function sc.gui.Entry:setText(text)
+    self.text = text or ""
+    self:_afterEdit()
+end
+
+--- Clear the entry's text.
+function sc.gui.Entry:clear()
+    self:setText("")
+end
+
+--- Create a focusable single-line text entry. Drive it with `app:feedKeystroke(...)` from a Keyboard component.
+---@param opts EntryOptions The entry options.
+---@return GUIEntry entry The created entry.
+function sc.gui.Frame:createEntry(opts)
+    sc.gui.logger.assert(type(opts) == "table", "Frame:createEntry", "opts must be a table!")
+
+    local text = opts.text or ""
+    if opts.variable ~= nil and opts.text == nil then
+        local value = opts.variable:get()
+        text = type(value) == "string" and value or tostring(value)
+    end
+
+    local entry = sc.gui._build({
+        x = opts.x or 0,
+        y = opts.y or 0,
+        width = opts.width or 80,
+        height = opts.height or 16,
+        _absX = 0, _absY = 0,
+        text = text,
+        placeholder = opts.placeholder,
+        variable = opts.variable,
+        maxLength = opts.maxLength,
+        padding = opts.padding or 3,
+        font = opts.font,
+        fontSize = opts.fontSize or self._app._defaultFontSize,
+        colorToggled = opts.colorToggled == nil and self._app._defaultColorToggled or opts.colorToggled,
+        textColor = opts.textColor or "#ffffff",
+        placeholderColor = opts.placeholderColor or "#888888",
+        backgroundColor = opts.backgroundColor or "#1e1e1e",
+        borderColor = opts.borderColor or "#666666",
+        focusBorderColor = opts.focusBorderColor or "#4caf50",
+        cursorColor = opts.cursorColor or "#ffffff",
+        focused = false,
+        _opaque = true,
+        visible = opts.visible ~= false,
+        enabled = opts.enabled ~= false,
+        onChange = opts.onChange,
+        onSubmit = opts.onSubmit,
+    }, sc.gui.Entry)
+    ---@cast entry GUIEntry
+
+    self:_add(entry)
+
+    if entry.variable ~= nil then
+        entry.variable:trace(function(value)
+            entry.text = type(value) == "string" and value or tostring(value)
+            entry:_markDirty()
+        end)
+    end
+
+    return entry
+end
+
+---@class ListBoxOptions Options for creating a list box.
+---@field x number|nil The x-coordinate relative to the parent's content area. Defaults to 0.
+---@field y number|nil The y-coordinate relative to the parent's content area. Defaults to 0.
+---@field width number|nil The width of the list box in pixels. Defaults to 80.
+---@field height number|nil The height of the list box in pixels. Defaults to 60.
+---@field items string[]|nil The initial list of item strings. Defaults to an empty list.
+---@field selectedIndex number|nil The initially selected 1-based index. Defaults to 0 (no selection).
+---@field itemHeight number|nil The height of each row in pixels. Defaults to 12.
+---@field padding number|nil Inner horizontal text padding in pixels. Defaults to 3.
+---@field font string|nil The ASCF font name. Defaults to the application's default font.
+---@field fontSize number|nil The item text size in design units. Defaults to the application's default font size.
+---@field colorToggled boolean|nil Whether item text may contain inline color codes. Defaults to the application default.
+---@field itemColor MultiColorTypeNonNil|nil The color of unselected item text. Defaults to "#ffffff".
+---@field selectedColor MultiColorTypeNonNil|nil The color of the selected item text. Defaults to "#ffffff".
+---@field backgroundColor MultiColorTypeNonNil|nil The fill color. Defaults to "#1e1e1e".
+---@field selectedBackgroundColor MultiColorTypeNonNil|nil The fill color behind the selected item. Defaults to "#4caf50".
+---@field borderColor MultiColorTypeNonNil|nil The border color, or nil for no border.
+---@field visible boolean|nil Whether the list box starts visible. Defaults to true.
+---@field enabled boolean|nil Whether the list box starts interactive. Defaults to true.
+---@field onSelect fun(listBox: GUIListBox, index: number, value: string, event: TouchData)|nil Called when an item is selected.
+
+---@class GUIListBox : GUIObject A scrollless, single-selection list of text items.
+---@field items string[] The list of item strings.
+---@field selectedIndex number The 1-based index of the selected item, or 0 if none.
+sc.gui.ListBox = sc.gui._newObjectType(sc.gui.Object)
+
+function sc.gui.ListBox:_draw(display)
+    display.drawFilledRect(self._absX, self._absY, self.width, self.height, self.backgroundColor)
+
+    local _, textHeight = self:_measureText(display, "Ag")
+    local textOffset = math.floor((self.itemHeight - textHeight) / 2)
+
+    for i = 1, #self.items do
+        local itemY = self._absY + (i - 1) * self.itemHeight
+        if itemY >= self._absY and itemY + self.itemHeight <= self._absY + self.height then
+            local color = self.itemColor
+            if i == self.selectedIndex then
+                display.drawFilledRect(self._absX, itemY, self.width, self.itemHeight, self.selectedBackgroundColor)
+                color = self.selectedColor
+            end
+            self:_drawText(display, self._absX + self.padding, itemY + textOffset, self.items[i], color, self.font, self.fontSize, self.colorToggled, 0)
+        end
+    end
+
+    if self.borderColor ~= nil then
+        display.drawRect(self._absX, self._absY, self.width, self.height, self.borderColor)
+    end
+end
+
+function sc.gui.ListBox:_onTouch(event, inside)
+    if event.state == 1 and inside then
+        local index = math.floor((event.y - self._absY) / self.itemHeight) + 1
+        if self.items[index] ~= nil then
+            self.selectedIndex = index
+            self:_markDirty()
+            if self.onSelect then self.onSelect(self, index, self.items[index], event) end
+        end
+        return true
+    end
+    return false
+end
+
+--- Replace the list box's items. The selection is reset.
+---@param items string[] The new list of item strings.
+function sc.gui.ListBox:setItems(items)
+    self.items = items
+    self.selectedIndex = 0
+    self:_markDirty()
+end
+
+--- Get the list box's items.
+---@return string[] items The list of item strings.
+function sc.gui.ListBox:getItems()
+    return self.items
+end
+
+--- Append an item to the list box.
+---@param item string The item text to append.
+function sc.gui.ListBox:addItem(item)
+    table.insert(self.items, item)
+    self:_markDirty()
+end
+
+--- Set the selected item by index. Pass 0 to clear the selection.
+---@param index number The 1-based index to select, or 0 for none.
+function sc.gui.ListBox:setSelected(index)
+    self.selectedIndex = index
+    self:_markDirty()
+end
+
+--- Get the currently selected item.
+---@return number index The 1-based selected index, or 0 if none.
+---@return string|nil value The selected item's text, or nil if none.
+function sc.gui.ListBox:getSelected()
+    return self.selectedIndex, self.items[self.selectedIndex]
+end
+
+--- Clear the current selection.
+function sc.gui.ListBox:clearSelection()
+    self.selectedIndex = 0
+    self:_markDirty()
+end
+
+--- Create a single-selection list box.
+---@param opts ListBoxOptions The list box options.
+---@return GUIListBox listBox The created list box.
+function sc.gui.Frame:createListBox(opts)
+    sc.gui.logger.assert(type(opts) == "table", "Frame:createListBox", "opts must be a table!")
+
+    local listBox = sc.gui._build({
+        x = opts.x or 0,
+        y = opts.y or 0,
+        width = opts.width or 80,
+        height = opts.height or 60,
+        _absX = 0, _absY = 0,
+        items = opts.items or {},
+        selectedIndex = opts.selectedIndex or 0,
+        itemHeight = opts.itemHeight or 12,
+        padding = opts.padding or 3,
+        font = opts.font,
+        fontSize = opts.fontSize or self._app._defaultFontSize,
+        colorToggled = opts.colorToggled == nil and self._app._defaultColorToggled or opts.colorToggled,
+        itemColor = opts.itemColor or "#ffffff",
+        selectedColor = opts.selectedColor or "#ffffff",
+        backgroundColor = opts.backgroundColor or "#1e1e1e",
+        selectedBackgroundColor = opts.selectedBackgroundColor or "#4caf50",
+        borderColor = opts.borderColor,
+        _opaque = true,
+        visible = opts.visible ~= false,
+        enabled = opts.enabled ~= false,
+        onSelect = opts.onSelect,
+    }, sc.gui.ListBox)
+
+    return self:_add(listBox)
+end
