@@ -79,10 +79,10 @@ end
 ---@field scaleEnabled boolean|nil If true, the whole UI is authored at scaleSizeW x scaleSizeH and automatically scaled to the real display resolution. All coordinates, sizes, radii, line thicknesses AND text sizes are scaled; touch input is mapped back into design space. Defaults to false.
 ---@field scaleSizeW number|nil The design width the layout was authored for. Required when scaleEnabled is true.
 ---@field scaleSizeH number|nil The design height the layout was authored for. Required when scaleEnabled is true.
----@field font string|nil The default text font name. For scalable ASCF text this is an ASCF font name; for regular text this may be nil to use the default built-in font.
----@field fontSize number|nil The default text size (in design units) for scalable ASCF text. Widgets may override it per-widget. Defaults to 8.
----@field colorToggled boolean|nil Whether scalable ASCF text may contain inline color codes by default. Defaults to false.
----@field textMode "scalable"|"regular"|nil Which text path widgets should use by default. Defaults to "scalable".
+---@field font string|nil The default text font name. For Scaleable ASCF text this is an ASCF font name; for regular text this may be nil to use the default built-in font.
+---@field fontSize number|nil The default text size (in design units) for Scaleable ASCF text. Widgets may override it per-widget. Defaults to 8.
+---@field colorToggled boolean|nil Whether Scaleable ASCF text may contain inline color codes by default. Defaults to false.
+---@field textMode "Scaleable"|"regular"|nil Which text path widgets should use by default. Defaults to "Scaleable".
 
 
 --- Create a new application instance.
@@ -141,7 +141,7 @@ function sc.gui:init(display, opts)
     self._defaultFont = opts.font
     self._defaultFontSize = opts.fontSize or 8
     self._defaultColorToggled = opts.colorToggled == true
-    self._defaultTextMode = opts.textMode or "scalable"
+    self._defaultTextMode = opts.textMode or "Scaleable"
     self:_computeScale()
     self._renderTarget = self:_buildRenderTarget()
     self._root = self:_createRootFrame()
@@ -241,7 +241,7 @@ function sc.gui:_buildRenderTarget()
         end
         return nil
     end
-    local function drawScalableText(x, y, text, font, color, rotation, fontSize, colorToggled)
+    local function drawScaleableText(x, y, text, font, color, rotation, fontSize, colorToggled)
         display.drawASCFText(sxp(x), syp(y), text, resolveFont(font), color, rotation, math.max(1, fontSize * sr), colorToggled)
     end
 
@@ -266,13 +266,13 @@ function sc.gui:_buildRenderTarget()
         drawPixel = function(x, y, color)
             display.drawPixel(sxp(x), syp(y), color)
         end,
-        drawScalableText = function(x, y, text, font, color, rotation, fontSize, colorToggled)
-            drawScalableText(x, y, text, font, color, rotation, fontSize, colorToggled)
+        drawScaleableText = function(x, y, text, font, color, rotation, fontSize, colorToggled)
+            drawScaleableText(x, y, text, font, color, rotation, fontSize, colorToggled)
         end,
         drawASCFText = function(x, y, text, font, color, rotation, fontSize, colorToggled)
-            drawScalableText(x, y, text, font, color, rotation, fontSize, colorToggled)
+            drawScaleableText(x, y, text, font, color, rotation, fontSize, colorToggled)
         end,
-        calcScalableTextSize = function(font, text, fontSize, rotation)
+        calcScaleableTextSize = function(font, text, fontSize, rotation)
             return display.calcASCFTextSize(font, text, fontSize, rotation)
         end,
         calcASCFTextSize = function(font, text, fontSize, rotation)
@@ -714,7 +714,7 @@ end
 sc.gui._measureCache = {}
 sc.gui._measureCacheCount = 0
 
-function sc.gui._measureScalableText(display, font, text, fontSize)
+function sc.gui._measureScaleableText(display, font, text, fontSize)
     local fontKey = font or "__default__"
     local byFont = sc.gui._measureCache[fontKey]
     if byFont == nil then byFont = {}; sc.gui._measureCache[fontKey] = byFont end
@@ -726,7 +726,7 @@ function sc.gui._measureScalableText(display, font, text, fontSize)
         return cached[1], cached[2]
     end
 
-    local w, h = display.calcScalableTextSize(font, text, fontSize, 0)
+    local w, h = display.calcASCFTextSize(font, text, fontSize, 0)
     if sc.gui._measureCacheCount >= 512 then
         sc.gui._measureCache = {}
         sc.gui._measureCacheCount = 0
@@ -739,7 +739,7 @@ function sc.gui._measureScalableText(display, font, text, fontSize)
 end
 
 function sc.gui._measureASCF(display, font, text, fontSize)
-    return sc.gui._measureScalableText(display, font, text, fontSize)
+    return sc.gui._measureScaleableText(display, font, text, fontSize)
 end
 
 function sc.gui.Object:_containsPoint(px, py)
@@ -750,7 +750,7 @@ end
 function sc.gui.Object:_textMode()
     if self.textMode ~= nil then return self.textMode end
     if self._app ~= nil and self._app._defaultTextMode ~= nil then return self._app._defaultTextMode end
-    return "scalable"
+    return "Scaleable"
 end
 
 function sc.gui.Object:_resolveTextFont(font)
@@ -774,7 +774,7 @@ function sc.gui.Object:_drawText(display, x, y, text, color, font, fontSize, col
         display.drawText(x, y, text, color, resolvedFont, nil, false)
         return
     end
-    display.drawScalableText(x, y, text, resolvedFont, color, rotation or 0, fontSize, colorToggled)
+    display.drawASCFText(x, y, text, resolvedFont, color, rotation or 0, fontSize, colorToggled)
 end
 
 function sc.gui.Object:_measureText(display, text)
