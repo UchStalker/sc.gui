@@ -23,4 +23,4 @@ sc.gui is a lightweight GUI framework for ScrapComputers that provides widgets, 
 
 ## Demo files
 
-The repository includes working examples in [test.lua](../test.lua).
+The repository includes working examples in [demo.lua](https://github.com/UchStalker/sc.gui/edit/main/docs/examples/demo.lua).
